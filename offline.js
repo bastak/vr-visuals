@@ -16,6 +16,10 @@ const OFF_MUXER_URL = 'https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/build/mp4-mu
 const OFF_BITRATE = 12e6;
 const OFF_CODECS = ['avc1.640028', 'avc1.4D4028', 'avc1.42E028', 'avc1.640033', 'avc1.42001F'];
 
+const OFF_AUDIO_RATE = 48000;
+const OFF_AUDIO_STEP = 1024;      // soundtrack updates every 1024 samples (~21 ms), like a live frame
+const OFF_AUDIO_BITRATE = 192000;
+
 let offPoints = [];               // timeline: [[t, eff_int], ...], t increasing (seconds of video)
 let offRecording = false, offRendering = false, offCancel = false, offPrevLoop = true;
 
@@ -130,6 +134,140 @@ async function offLoadTimeline(file) {
   }
 }
 
+// ---- soundtrack for the timeline (reuses audio.js) ----
+// The soundtrack's own graph is built on an OfflineAudioContext (audio.js buildAudioGraph) and
+// driven by the normal updateSoundtrack() with eff_int from the timeline: the render pauses every
+// OFF_AUDIO_STEP samples for one update. audio.js's state is swapped out for the render and put
+// back afterwards. Head cues are left out (no head tracking offline). Call with offBusy set, so
+// the live loop doesn't touch the swapped state.
+async function offRenderSoundtrack(duration) {
+  if (typeof buildAudioGraph !== 'function') throw new Error('the soundtrack code (audio.js) is not loaded');
+  if (!folderHasFiles('bed')) await probeSoundtrack();
+  if (!folderHasFiles('bed')) throw new Error('no soundtrack files (audio/bed/)');
+  ensureAudioCtx();                                   // the live context decodes the files
+  await preloadFolder('bed');
+  await Promise.all(['peak', 'intense', 'head_appear', 'head_disappear'].map(preloadFolder));
+
+  const saved = { audioCtx, masterGain, peakGain, peakSource, peakStopTimer, peakActive, peakHold, bedFilter,
+    bedPanner, panLfo, panDepth, bedGain, calmBedGain, hotBedGain, calmBedSource, hotBedSource, playing,
+    lastEffForAudio, lastIntenseLevel, presentHeads, readyAt: { ...readyAt }, getHeads };
+  const frames = Math.max(OFF_AUDIO_STEP, Math.ceil(duration * OFF_AUDIO_RATE));
+  const ctx = new OfflineAudioContext(2, frames, OFF_AUDIO_RATE);
+  try {
+    buildAudioGraph(ctx);
+    calmBedSource = hotBedSource = peakSource = null;
+    peakActive = false; peakHold = 0;
+    let calmUrl = pickUrl('bed', (n) => !isMoreIntenseBed(n));
+    const hotUrl = pickUrl('bed', isMoreIntenseBed);
+    if (!calmUrl && !hotUrl) calmUrl = pickUrl('bed');
+    const calmBuf = calmUrl && buffers.get(calmUrl), hotBuf = hotUrl && buffers.get(hotUrl);
+    if (!calmBuf && !hotBuf) throw new Error('could not decode a bed file');
+    if (calmBuf) calmBedSource = startLoop(calmBuf, calmBedGain);
+    if (hotBuf) hotBedSource = startLoop(hotBuf, hotBedGain);
+    silenceBedsNow();
+    playing = true;
+    for (const k of Object.keys(readyAt)) readyAt[k] = 0;
+    presentHeads = new Map();
+    getHeads = () => [];                              // no head cues offline
+    const v0 = offCurveAt(0);
+    lastEffForAudio = v0; lastIntenseLevel = intenseLevel(v0);
+    applyAudioTargets(v0);
+    const dt = OFF_AUDIO_STEP / OFF_AUDIO_RATE;
+    for (let f = OFF_AUDIO_STEP; f < frames; f += OFF_AUDIO_STEP) {
+      const t = f / OFF_AUDIO_RATE;
+      ctx.suspend(t).then(() => {
+        try { updateSoundtrack(offCurveAt(t), dt); } catch (e) { console.error(e); }
+        ctx.resume().catch(() => { /* updateSoundtrack may already have resumed it */ });
+      });
+    }
+    return await ctx.startRendering();
+  } finally {
+    clearTimeout(peakStopTimer);                      // a timer set during the render
+    ({ audioCtx, masterGain, peakGain, peakSource, peakStopTimer, peakActive, peakHold, bedFilter, bedPanner,
+       panLfo, panDepth, bedGain, calmBedGain, hotBedGain, calmBedSource, hotBedSource, playing,
+       lastEffForAudio, lastIntenseLevel, presentHeads, getHeads } = saved);
+    Object.assign(readyAt, saved.readyAt);
+  }
+}
+
+// AudioBuffer -> 16-bit stereo WAV blob.
+function offWav(buf) {
+  const ch = Math.min(2, buf.numberOfChannels), n = buf.length, rate = buf.sampleRate;
+  const out = new DataView(new ArrayBuffer(44 + n * ch * 2));
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) out.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); out.setUint32(4, 36 + n * ch * 2, true); str(8, 'WAVE'); str(12, 'fmt ');
+  out.setUint32(16, 16, true); out.setUint16(20, 1, true); out.setUint16(22, ch, true);
+  out.setUint32(24, rate, true); out.setUint32(28, rate * ch * 2, true); out.setUint16(32, ch * 2, true);
+  out.setUint16(34, 16, true); str(36, 'data'); out.setUint32(40, n * ch * 2, true);
+  const data = [...Array(ch)].map((_, c) => buf.getChannelData(c));
+  let o = 44;
+  for (let i = 0; i < n; i++) for (let c = 0; c < ch; c++) {
+    const v = Math.max(-1, Math.min(1, data[c][i]));
+    out.setInt16(o, v < 0 ? v * 0x8000 : v * 0x7fff, true); o += 2;
+  }
+  return new Blob([out], { type: 'audio/wav' });
+}
+
+function offDownload(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  return url;
+}
+
+async function offSoundtrackOnly() {
+  if (offRendering) return;
+  if (!offHasVideo()) { offStatus('load a video file first (Input: choose file)'); return; }
+  if (!offPoints.length) { offStatus('record or load a timeline first'); return; }
+  offRendering = true; offBusy = true;
+  try {
+    offStatus('rendering the soundtrack...');
+    const buf = await offRenderSoundtrack(video.duration);
+    const blob = offWav(buf);
+    offDownload(blob, `vr-visuals-soundtrack-${offVideoName()}.wav`);
+    window.offLastSoundtrack = buf;   // for checks
+    offStatus(`saved vr-visuals-soundtrack-${offVideoName()}.wav (${buf.duration.toFixed(1)} s, ${(blob.size / 1e6).toFixed(1)} MB)`);
+  } catch (e) {
+    offStatus('soundtrack failed: ' + (e && e.message ? e.message : e));
+  } finally {
+    offRendering = false; offBusy = false;
+  }
+}
+
+// Encode an AudioBuffer into the MP4 (AAC if this browser can encode it, else Opus).
+async function offAudioCodec() {
+  if (typeof AudioEncoder === 'undefined') return null;
+  for (const [codec, mux] of [['mp4a.40.2', 'aac'], ['opus', 'opus']]) {
+    const cfg = { codec, sampleRate: OFF_AUDIO_RATE, numberOfChannels: 2, bitrate: OFF_AUDIO_BITRATE };
+    try { if ((await AudioEncoder.isConfigSupported(cfg)).supported) return { cfg, mux }; } catch { /* next */ }
+  }
+  return null;
+}
+
+async function offEncodeAudio(buf, codec, muxer) {
+  let err = null;
+  const enc = new AudioEncoder({ output: (chunk, meta) => muxer.addAudioChunk(chunk, meta), error: (e) => { err = e; } });
+  enc.configure(codec.cfg);
+  const block = 4800;   // 0.1 s per AudioData
+  const ch = [buf.getChannelData(0), buf.getChannelData(buf.numberOfChannels > 1 ? 1 : 0)];
+  for (let i = 0; i < buf.length; i += block) {
+    const n = Math.min(block, buf.length - i);
+    const planar = new Float32Array(n * 2);
+    planar.set(ch[0].subarray(i, i + n), 0);
+    planar.set(ch[1].subarray(i, i + n), n);
+    const ad = new AudioData({ format: 'f32-planar', sampleRate: buf.sampleRate, numberOfFrames: n, numberOfChannels: 2,
+                               timestamp: Math.round((i / buf.sampleRate) * 1e6), data: planar });
+    enc.encode(ad);
+    ad.close();
+    if (err) throw err;
+  }
+  await enc.flush();
+  enc.close();
+  if (err) throw err;
+}
+
 // ---- offline render ----
 // Seek and wait until the frame at t is ready: the 'seeked' event, then briefly for a new-frame
 // callback (it doesn't come when the seek lands on the same frame as before, e.g. when the
@@ -172,9 +310,30 @@ async function offRender() {
   }
   if (!config) { offStatus(`no H.264 encoder available for ${w}x${h}`); return; }
 
+  // Soundtrack first (fast, faster than real time), so the MP4 knows it has an audio track.
+  let soundBuf = null, aCodec = null, soundNote = '';
+  $('offRenderBtn').disabled = true;              // until the frame loop can be cancelled
+  if ($('offSound').checked) {
+    aCodec = await offAudioCodec();
+    if (!aCodec) soundNote = ' (no soundtrack: this browser cannot encode audio)';
+    else {
+      offBusy = true;
+      offStatus('rendering the soundtrack...');
+      try { soundBuf = await offRenderSoundtrack(video.duration); }
+      catch (e) { soundNote = ' (no soundtrack: ' + (e && e.message ? e.message : e) + ')'; }
+      offBusy = false;
+    }
+  }
+
   const target = new Mux.ArrayBufferTarget();
   const muxer = new Mux.Muxer({ target, video: { codec: 'avc', width: w, height: h, frameRate: fps },
+                                audio: soundBuf ? { codec: aCodec.mux, numberOfChannels: 2, sampleRate: OFF_AUDIO_RATE } : undefined,
                                 fastStart: 'in-memory', firstTimestampBehavior: 'offset' });
+  if (soundBuf) {
+    try { await offEncodeAudio(soundBuf, aCodec, muxer); }
+    catch (e) { offStatus('audio encoding failed: ' + (e && e.message ? e.message : e)); $('offRenderBtn').disabled = false; return; }
+  }
+  $('offRenderBtn').disabled = false;
   let encError = null;
   const enc = new VideoEncoder({ output: (chunk, meta) => muxer.addVideoChunk(chunk, meta), error: (e) => { encError = e; } });
   enc.configure(config);
@@ -220,7 +379,7 @@ async function offRender() {
       a.href = url; a.download = `vr-visuals-render-${offVideoName()}.mp4`;
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 60000);
-      offStatus(`saved ${a.download} (${n} frames, ${(blob.size / 1e6).toFixed(1)} MB, ${((performance.now() - started) / 1000).toFixed(0)} s)`);
+      offStatus(`saved ${a.download} (${n} frames, ${(blob.size / 1e6).toFixed(1)} MB, ${((performance.now() - started) / 1000).toFixed(0)} s${soundBuf ? ', with soundtrack' : ''})${soundNote}`);
       window.offLastRender = { url, size: blob.size, frames: n, width: w, height: h };   // for checks
     }
   } catch (e) {
@@ -240,6 +399,7 @@ async function offRender() {
 $('offRecBtn').onclick = offToggleRecording;
 $('offRenderBtn').onclick = offRender;
 $('offSaveBtn').onclick = offSaveTimeline;
+$('offWavBtn').onclick = offSoundtrackOnly;
 $('offLoadBtn').onclick = () => $('offLoadIn').click();
 $('offLoadIn').onchange = (ev) => { const f = ev.target.files[0]; if (f) offLoadTimeline(f); ev.target.value = ''; };
 video.addEventListener('timeupdate', () => { if (!offRecording) offDrawCurve(); });

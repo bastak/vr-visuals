@@ -90,40 +90,47 @@ function ensureAudioCtx() {
   if (!audioCtx) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return null;
-    audioCtx = new AC();
-    masterGain = audioCtx.createGain();
-    masterGain.gain.value = audioVol();
-    bedFilter = audioCtx.createBiquadFilter();
-    bedFilter.type = 'lowpass';
-    bedFilter.frequency.value = FILTER_CLOSED;
-    bedFilter.Q.value = 0.7;
-    bedGain = audioCtx.createGain();
-    bedGain.gain.value = 0;
-    calmBedGain = audioCtx.createGain();
-    hotBedGain = audioCtx.createGain();
-    calmBedGain.gain.value = 0;
-    hotBedGain.gain.value = 0;
-    calmBedGain.connect(bedGain);
-    hotBedGain.connect(bedGain);
-    bedGain.connect(bedFilter);
-    // Auto-pan: LFO -> depth -> panner.pan; rate and depth rise with eff_int.
-    bedPanner = audioCtx.createStereoPanner();
-    bedPanner.pan.value = 0;
-    panDepth = audioCtx.createGain();
-    panDepth.gain.value = 0;
-    panLfo = audioCtx.createOscillator();
-    panLfo.type = 'sine';
-    panLfo.frequency.value = PAN_RATE_MIN;
-    panLfo.connect(panDepth);
-    panDepth.connect(bedPanner.pan);
-    panLfo.start();
-    bedFilter.connect(bedPanner);
-    bedPanner.connect(masterGain);
-    peakGain = audioCtx.createGain();
-    peakGain.gain.value = 0;
-    peakGain.connect(masterGain);
-    masterGain.connect(audioCtx.destination);
+    buildAudioGraph(new AC());
   }
+  return audioCtx;
+}
+
+// Build the soundtrack's node graph on ctx and make it the current context. offline.js also
+// calls this with an OfflineAudioContext to render the soundtrack for a video's eff_int timeline.
+function buildAudioGraph(ctx) {
+  audioCtx = ctx;
+  masterGain = audioCtx.createGain();
+  masterGain.gain.value = audioVol();
+  bedFilter = audioCtx.createBiquadFilter();
+  bedFilter.type = 'lowpass';
+  bedFilter.frequency.value = FILTER_CLOSED;
+  bedFilter.Q.value = 0.7;
+  bedGain = audioCtx.createGain();
+  bedGain.gain.value = 0;
+  calmBedGain = audioCtx.createGain();
+  hotBedGain = audioCtx.createGain();
+  calmBedGain.gain.value = 0;
+  hotBedGain.gain.value = 0;
+  calmBedGain.connect(bedGain);
+  hotBedGain.connect(bedGain);
+  bedGain.connect(bedFilter);
+  // Auto-pan: LFO -> depth -> panner.pan; rate and depth rise with eff_int.
+  bedPanner = audioCtx.createStereoPanner();
+  bedPanner.pan.value = 0;
+  panDepth = audioCtx.createGain();
+  panDepth.gain.value = 0;
+  panLfo = audioCtx.createOscillator();
+  panLfo.type = 'sine';
+  panLfo.frequency.value = PAN_RATE_MIN;
+  panLfo.connect(panDepth);
+  panDepth.connect(bedPanner.pan);
+  panLfo.start();
+  bedFilter.connect(bedPanner);
+  bedPanner.connect(masterGain);
+  peakGain = audioCtx.createGain();
+  peakGain.gain.value = 0;
+  peakGain.connect(masterGain);
+  masterGain.connect(audioCtx.destination);
   return audioCtx;
 }
 

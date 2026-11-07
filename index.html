@@ -72,6 +72,18 @@
   <div id="stats" class="note"></div>
   <div class="row" title="Records the processed image (one eye in VR) and saves it to Downloads. In VR: B button."><button id="recBtn">Record</button> <span id="recStatus" class="note" style="margin:0"></span></div>
   <ul id="recList" class="note" style="margin:0;padding-left:16px"></ul>
+  <details id="offBox">
+    <summary class="note" style="cursor:pointer;margin-top:6px">Offline render (video file)</summary>
+    <div class="note">1. load a video file, tick effects, 2. record the eff_int timeline, 3. render (frame by frame, no dropped frames).</div>
+    <div class="row"><button id="offRecBtn">Record timeline</button>
+      speed <select id="offSpeed"><option value="1">1×</option><option value="0.5">0.5×</option><option value="0.25">0.25×</option></select></div>
+    <canvas id="offCurve" width="520" height="80" style="width:100%;height:40px;display:block;border-radius:3px"></canvas>
+    <div class="row"><button id="offSaveBtn">Save timeline</button><button id="offLoadBtn">Load timeline</button>
+      <input id="offLoadIn" type="file" accept=".json,application/json" hidden></div>
+    <div class="row"><button id="offRenderBtn">Render video</button>
+      fps <select id="offFps"><option>24</option><option>25</option><option selected>30</option><option>60</option></select></div>
+    <div id="offStatus" class="note" style="margin-top:2px"></div>
+  </details>
   <h3>eff_int</h3>
   <div class="row">
     <input id="effInt" type="range" min="0" max="1" step="0.001" value="0.6">
@@ -167,5 +179,6 @@
 <script src="audio.js?v=dev"></script>
 <script src="xr.js?v=dev"></script>
 <script src="record.js?v=dev"></script>
+<script src="offline.js?v=dev"></script>
 </body>
 </html>

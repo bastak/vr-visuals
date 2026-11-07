@@ -152,6 +152,18 @@ Press **B** (right controller) in VR, or **Record** in the panel, to start recor
 
 The real passthrough around the image is not in the recording (web pages can't see it); for the full view as you see it, use the Quest's own recorder (Meta button, Camera, Record video). Recording costs some headset performance and about 1 MB per second, so keep clips short. To get a clip off the Quest: USB cable (Quest folder Download/) or the Meta Horizon app.
 
+## Offline render (effects on a video file, with an eff_int timeline)
+
+For applying effects to a recorded video when they are too slow to run live (on the laptop, in Chrome or Edge). Open **Offline render** at the bottom of the Input section in the panel:
+
+1. Load the video with **Choose file** (or drop it on the page), tick the effects and set their strengths and sliders.
+2. **Record timeline**: the video plays from the start with the effects switched off (so it plays smoothly) while you move the **eff_int** slider at the right moments; it stops at the end of the video (or press **Stop**). Pick a slower **speed** for precise timing. The curve shows what was recorded; **Save timeline** / **Load timeline** keep it as a JSON file.
+3. **Render video**: the page goes through the video frame by frame, applies the effects with eff_int from the timeline and writes an MP4 into **Downloads** (`vr-visuals-render-<name>.mp4`, at the chosen fps). This is slower than real time but never drops a frame; **Cancel** stops it. The live page pauses while rendering.
+
+**Soundtrack:** with **with soundtrack** ticked, the render also generates the project soundtrack (the same reactive soundtrack as the Soundtrack section: beds crossfading with eff_int, filter, panning, the peak layer and the "intense" one-shots) for your eff_int timeline and puts it into the MP4 (AAC, or Opus if the browser can't encode AAC). **Soundtrack only (WAV)** renders just the audio. The volume and "react" sliders of the Soundtrack section apply. Like the live soundtrack, the beds fade in over a few seconds from silence, so a very short clip starts quiet; head cues (`head_appear` / `head_disappear`) are left out offline.
+
+Limits: the **original sound** of the video is not included (add it in a video editor if you want it); effects that detect heads (`head_masks`) or the main object (`illusion`) do that analysis on a timer, so in the render they may update less often than every frame. Needs WebCodecs (current Chrome/Edge); the MP4 writer ([mp4-muxer](https://github.com/Vanilagy/mp4-muxer)) is loaded from jsdelivr on first use.
+
 ## Hosted version
 
 Every push to `main` deploys the site to GitHub Pages via `.github/workflows/pages.yml` (it generates `effects.json`, which `serve.py` otherwise produces on the fly).

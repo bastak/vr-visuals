@@ -923,6 +923,8 @@ function setHeads(tracks, sx, sy) {
 const startTime = performance.now();
 let lastNow = startTime;
 let xrSession = null;   // set by xr.js while the headset mode is active
+let offBusy = false;    // offline.js: rendering a video frame by frame (live loop paused)
+let offBypass = false;  // offline.js: recording a timeline (effects skipped so playback is smooth)
 
 // ============================================================================
 // Head direction for effects (u_look, u_gaze). xr.js feeds the headset's head
@@ -1093,7 +1095,7 @@ function frame(now) {
   requestAnimationFrame(frame);
   const dt = Math.min(0.1, (now - lastNow) / 1000);
   lastNow = now;
-  if (xrSession) return;
+  if (xrSession || offBusy) return;
   stats.renderFrames++;
   resize();
 
@@ -1162,7 +1164,7 @@ function renderChain(time, lane = 0) {
   // Effect chain.
   let input = sourceRT[lane].tex;
   for (const e of chain) {
-    if (!e.enabled || !e.prog) continue;
+    if (!e.enabled || !e.prog || offBypass) continue;
     ensureTargets(e, lane);
     const c = e.cur[lane], write = e.rts[lane][c], prev = e.rts[lane][1 - c];
     draw(e, write.fbo, input, prev.tex, time);
